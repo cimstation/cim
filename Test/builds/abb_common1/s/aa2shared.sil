@@ -1,0 +1,485 @@
+{ File: aa*shared.sil }
+{ Contains: common code for posting ABB commands from multiple products (StruCIM, e-hub, etc.) }
+{ Edits:
+		26.sep.12	pck	created file (based on mm7shared.sil)
+}
+
+
+
+
+aa_max_blend_dist		== 2.0;		{ cm for fly-to distance which corresponds to 100% blend }
+aa_joint_speed_factor	== 50.0;		{ cm/s for TCP which corresponds to 100% joint speed }
+
+
+function aa_get_point_type(proc_num: integer): string;
+var	str: string;
+begin
+	if (proc_num > -1) then
+		str := 'CONST'
+	else
+		str := 'VAR';
+
+	aa_get_point_type := str;
+end;
+
+
+function aa_build_point_name(proc_num, pnt_num: integer): string;
+var	str: string;
+begin
+	str := '';
+	if (proc_num > -1) then
+		str := int2str(proc_num) * '_';
+	str := str * int2str(pnt_num);
+	
+	aa_build_point_name := str;
+end;
+
+
+function aa_fixup_filename(fn: string): string;
+var	res: string;
+	los: list_of(string);
+begin
+	{ REPLACE SLASHES WITH UNDERSCORES }
+	los := parse_string('/', fn);
+	res := car(los);
+	for k in cdr(los) do res := res * '_' * k;
+
+	{ MAKE SURE PROGRAM NAME DOES NOT START WITH A NUMBER }
+	if (ord(res[0]) >= 48) and (ord(res[0]) <= 57) then
+		res := 'prog_' * res;
+
+	aa_fixup_filename := lowercase(res);
+end;
+
+
+function is_abb_robot(rob: shape): boolean;
+var	ret: boolean;
+	str: string;
+begin
+	ret := false;
+	
+	if (is_robot(rob)) then
+		begin
+		str := uppercase(silspec_type(rob));
+		ret := (find(str, 'ABB') <> -1);
+		end;
+		
+	is_abb_robot := ret;
+end;
+
+
+{ --- modified version of abb_ea from ar2write.sil --- }
+function aa_abb_ea(lor: list_of(real)): string;
+var	str: string;
+begin
+	str := '[';
+	for i := 0 to 5 do
+		begin
+		if i < length(lor) then
+			str := str * real2str(lor[i], '%.4f')
+		else
+			str := str * '9E9';
+		if (i < 5) then
+			str := str * ',';
+		end;
+
+	{ ABBRobotStudio does not accept a 7th value here }
+	if (false) then
+		begin
+		if (length(lor) > 6) then
+			str := str * ',' * real2str(lor[6],'%.4f')
+		else
+			str := str * ',9E9';
+		end;
+
+	aa_abb_ea := str * ']';
+end;
+
+
+function aa_abb_quadrant(j_orig: real): integer;
+var	quad_num, ret, j_trunc: integer;
+	j: real;
+begin	
+	j := abs(j_orig);
+
+	{ remove any kinematic rounding error }
+	j := j * 1000.0;
+	j_trunc := round(j);
+	j := j_trunc / 1000.0;
+
+	quad_num := trunc(j / 90.0);
+	if (j_orig >= 0.0)then
+		begin
+		ret := quad_num;
+		end
+	else
+		begin
+		ret := -(quad_num + 1);
+		end;
+		
+	aa_abb_quadrant := ret;
+end;
+
+
+function aa_abb_config(cur_jv: jv): string;
+var	str: string;
+begin
+	{*** for all abb robots, except the 6400C ***}
+	str :=	'['
+			* int2str(aa_abb_quadrant(j1(cur_jv))) * ','
+			* int2str(aa_abb_quadrant(j4(cur_jv))) * ','
+			* int2str(aa_abb_quadrant(j6(cur_jv))) * ','
+			* '0]';
+	
+	aa_abb_config := str;
+end;
+
+
+function aa_get_tool_pose(rob: shape): string;
+var	flg, tl: shape;
+	fr: frame;
+begin
+	flg := get_flange(rob);
+	tl := get_cool_tool(rob);
+
+	if (not(null(tl))) then
+		fr := pose(tl) in_frame pose(flg)
+	else
+		fr := null_frame;
+
+	aa_get_tool_pose := abb_pose(fr);
+end;
+
+
+function aa_format_robtarget(jjj: jv; ref_shape, rob: shape; proc_num, index: integer): string;
+var	str: string;
+	ct: crt_ypr;
+	fr: frame;
+	tl: shape;
+	lor: list_of(real);
+begin
+	{ MOVE SILSPEC TO JV SO CONFIG STRING IS CORRECT }
+	imoveto(rob ~ robot, jjj);
+	refresh();
+
+	tl := get_cool_tool(rob);
+	if (null(tl)) then
+		tl := get_flange(rob);
+
+	fr := pose(tl) in_frame pose(ref_shape);
+	
+	lor := list(50.0);
+
+	str :=	'    ' * aa_get_point_type(proc_num) * ' robtarget p' * aa_build_point_name(proc_num, index) * ' := ['
+			* abb_pose(fr)
+			* ',' * aa_abb_config(jjj)
+			* ',' * aa_abb_ea(lor)
+			* '];';
+	
+	aa_format_robtarget := str;
+end;
+
+
+function aa_format_robtarget(jjj: jv; ref_shape, rob: shape; index: integer): string;
+var	proc_num: integer;
+begin
+	proc_num := -1;
+	
+	aa_format_robtarget := aa_format_robtarget(jjj, ref_shape, rob, proc_num, index);
+end;
+
+
+function aa_format_robtarget(via_shp, ref_shape, rob: shape; proc_num, index: integer): string;
+var	fr: frame;
+	str: string;
+	jjj: jv;
+	lor: list_of(real);
+begin
+	if (is_jv_shape(via_shp)) then
+		begin
+		jjj := jv_of(via_shp ~ jv_shape);
+		str := aa_format_robtarget(jjj, ref_shape, rob, proc_num, index);
+		end
+	else
+		begin
+		fr := pose(via_shp) in_frame pose(ref_shape);
+
+		lor := list(50.0);
+		
+		str :=	'    ' * aa_get_point_type(proc_num) * ' robtarget p' * aa_build_point_name(proc_num, index) * ' := ['
+				* abb_pose(fr)
+				* ',' * aa_abb_config(c_jv(rob))
+				* ',' * aa_abb_ea(lor)
+				* '];';
+		end;
+
+	aa_format_robtarget := str;
+end;
+
+
+function aa_format_robtarget(via_shp, ref_shape, rob: shape; index: integer): string;
+var	proc_num: integer;
+begin
+	proc_num := -1;
+	
+	aa_format_robtarget := aa_format_robtarget(via_shp, ref_shape, rob, proc_num, index);
+end;
+
+
+function aa_format_jointtarget(b: jv; proc_num, index: integer): string;
+var	str: string;
+	lor: list_of(real);
+begin
+	lor := list(50.0);
+	
+	str :=	'    ' * aa_get_point_type(proc_num) * ' jointtarget j' * aa_build_point_name(proc_num, index) * ' := [['
+			* real2str(j1(b), '%.4f') * ','
+			* real2str(j2(b), '%.4f') * ','
+			* real2str(j3(b), '%.4f') * ','
+			* real2str(j4(b), '%.4f') * ','
+			* real2str(j5(b), '%.4f') * ','
+			* real2str(j6(b), '%.4f')
+			* '],' * aa_abb_ea(lor) * '];';
+
+	aa_format_jointtarget := str;
+end;
+
+
+function aa_format_jointtarget(b: jv; index: integer): string;
+var	proc_num: integer;
+begin
+	proc_num := -1;
+	
+	aa_format_jointtarget := aa_format_jointtarget(b, proc_num, index);
+end;
+
+
+procedure aa_write_abb_robtargets(txt: text; bp: bpath; ref_shape: shape);
+var	mrp: m_request_path;
+	mr: m_request;
+	olp: object_list_path;
+	via_shp, rob: shape;
+	str: string;
+begin
+	mrp := get_m_request_path(bp);
+	olp := bp ~ object_list_path;
+	rob := robot_of(bp);
+
+	{ STORE ALL VIAS BY NUMBER }
+	for k := 0 to (length(bp) - 1) do
+		begin
+		mr := mrp.vias[k];
+		bp.kind := 1; { for snap_to_nth to work }
+		snap_to_nth(bp, k + 1);
+		
+		via_shp := wlkup(olp.vias[k]);
+		str := aa_format_robtarget(via_shp, ref_shape, rob, k);
+		writeln(txt, str);
+		end;
+
+	writeln(txt, '    ! ');
+end;
+
+
+procedure aa_write_abb_jointtargets(txt: text; res: list_of(jv); rob: shape);
+var	b, last_jv: jv;
+	str: string;
+begin
+	{ JUMP TO LAST SAFE MOVE POSITION FOR FUTURE ARM CONFIGURATION CALCS }
+	last_jv := car(last(res));
+	imoveto(rob ~ robot, last_jv);
+
+	for k := 0 to (length(res) - 1) do
+		begin
+		b := select(res, k);
+		str := aa_format_jointtarget(b, k);
+		writeln(txt, str);
+		end;
+
+	writeln(txt, '    ! ');
+end;
+
+
+function aa_get_blend_code(blend_dist: real): integer;
+var	ret: integer;
+	step_size: real;
+begin
+	ret := 1;		{ default value }
+
+	blend_dist := blend_dist / mm;	{ convert from cm to mm }
+
+	if (blend_dist = 0.0) then
+		ret := -1
+	else if (blend_dist < 0.5) then
+		ret := 0
+	else if (blend_dist < 3) then
+		ret := 1
+	else if (blend_dist >= 200) then
+		ret := 200
+	else
+		begin
+		if (blend_dist < 20) then
+			step_size := 5.0
+		else if (blend_dist < 60) then
+			step_size := 10.0
+		else if (blend_dist < 100) then
+			step_size := 20.0
+		else
+			step_size := 50.0;
+
+		ret := roundoff(step_size) * roundoff(blend_dist / step_size);
+		end;
+
+	aa_get_blend_code := ret;
+end;
+
+
+function aa_get_blend_string(blend_dist: real): string;
+var	blend_str: string;
+	blend_code: integer;
+begin
+	blend_str := '';
+
+	blend_code := aa_get_blend_code(blend_dist);
+	if (blend_code >= 0) then
+		blend_str := 'z' * int2str(blend_code) * ', '
+	else
+		blend_str := 'fine, ';
+
+	aa_get_blend_string := blend_str;
+end;
+
+
+function aa_get_speed_code(vel: real): integer;
+var	ret: integer;
+	step_size: real;
+begin
+	ret := 30;		{ default value }
+
+	vel := vel / mm;	{ convert cm/s to mm/s }
+
+	if (vel < 5) then
+		ret := 5
+	else if (vel >= 7500) then
+		ret := -1
+	else
+		begin
+		if (vel < 10) then
+			step_size := 5.0
+		else if (vel < 60) then
+			step_size := 10.0
+		else if (vel < 100) then
+			step_size := 20.0
+		else if (vel < 200) then
+			step_size := 50.0
+		else if (vel < 600) then
+			step_size := 100.0
+		else if (vel < 1000) then
+			step_size := 200.0
+		else if (vel < 3000) then
+			step_size := 500.0
+		else
+			step_size := 1000.0;
+
+		ret := roundoff(step_size) * roundoff(vel / step_size);
+		end;
+	aa_get_speed_code := ret;
+end;
+
+
+function aa_get_speed_string(vel: real): string;
+var	speed_str: string;
+	speed_code: integer;
+begin
+	speed_str := '';
+
+	speed_code := aa_get_speed_code(vel);
+	if (speed_code > 0) then
+		speed_str := 'v' * int2str(speed_code) * ', '
+	else
+		speed_str := 'vmax, ';
+
+	aa_get_speed_string := speed_str;
+end;
+
+
+function aa_build_move_cmd(proc_num, pnt_num: integer; motion_id: id; trigger_str, tool_name, offset_var: string;
+						spd, bld: real): string;
+var	move_cmd, point_str, speed_str, blend_str, full_cmd: string;
+	trigger_action: string;
+	point_name: string;
+begin
+	if (trigger_str <> '') then
+		move_cmd := 'TriggL '
+	else
+		begin
+		case (motion_id) of
+			"CSL:	move_cmd := 'MoveL ';
+			"JSI:	move_cmd := 'MoveJ ';
+			else:	begin
+					writeln('Unknown motion: ', motion_id);
+					move_cmd := 'MoveJ ';
+					end;
+			end;
+		end;
+
+	point_name := aa_build_point_name(proc_num, pnt_num);
+	
+	if (offset_var <> '') then
+		begin
+		point_str := 'Offs(p' * point_name * ', ';
+		point_str := point_str * offset_var * '.trans.x, ';
+		point_str := point_str * offset_var * '.trans.y, ';
+		point_str := point_str * offset_var * '.trans.z), ';
+		end
+	else
+		point_str := 'p' * point_name * ', ';
+
+	trigger_action := '';
+	if (trigger_str <> '') then begin
+		trigger_action := trigger_str * ', ';
+	end;
+
+	speed_str := aa_get_speed_string(spd);
+	blend_str := aa_get_blend_string(bld);
+
+	full_cmd := move_cmd * point_str * speed_str * trigger_action * blend_str * tool_name * ';';
+
+	aa_build_move_cmd := full_cmd;
+end;
+
+
+function aa_build_move_cmd(pnt_num: integer; motion_id: id; trigger_str, tool_name, offset_var: string;
+						spd, bld: real): string;
+var	proc_num: integer;
+begin
+	proc_num := -1;
+	
+	aa_build_move_cmd := aa_build_move_cmd(proc_num, pnt_num, motion_id, trigger_str, tool_name, offset_var, spd, bld);
+end;
+
+
+function aa_build_move_cmd(mr: m_request; proc_num, pnt_num: integer; trigger_str, tool_name, offset_var: string): string;
+var	motion_id: id;
+	spd, bld: real;
+begin
+	motion_id := mr.motion_kind;
+	
+	case (mr.motion_kind) of
+		"CSL:	spd := (mr.lin_velocity.value);
+		"JSI: 	spd := (mr.joint_velocity.value * aa_joint_speed_factor);
+		end;
+
+	bld := mr.blend.value * aa_max_blend_dist;
+
+	aa_build_move_cmd := aa_build_move_cmd(proc_num, pnt_num, motion_id, trigger_str, tool_name, offset_var, spd, bld);
+end;
+
+
+function aa_build_move_cmd(mr: m_request; pnt_num: integer; trigger_str, tool_name, offset_var: string): string;
+var	proc_num: integer;
+begin
+	proc_num := -1;
+	
+	aa_build_move_cmd := aa_build_move_cmd(mr, proc_num, pnt_num, trigger_str, tool_name, offset_var);
+end;

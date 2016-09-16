@@ -1,0 +1,209 @@
+{ File: aa*progdata.sil }
+{ Contains: code for storing data with a xob during post-processing - critical for translating nested programs }
+{ Edits:
+		26.sep.12	pck	created file (based on mm2progdata.sil)
+}
+
+
+
+
+aa_procedure_number		== 1;
+
+
+type aa_position_rec = record
+	str:				string;
+	booles:			integer;
+end;;
+define_bit_field(aa_position_rec, "is_jv, "booles, 0);
+
+
+aa_position_rec_list	== emptylist(aa_position_rec);
+
+
+function aa_write_positions_to_file(txt: text; pos_arr: sarray_of(aa_position_rec)): id;
+var	lst: list_of(string);
+	frame_id: id;
+begin
+	for i in pos_arr do
+		begin
+		if (i.str <> '') then
+			writeln(txt, i.str);
+		end;
+	writeln(txt, '    ! ');
+		
+	frame_id := "ROBOT;
+	aa_write_positions_to_file := frame_id;
+end;
+
+
+
+
+type aa_subprog_rec = record
+	prog_path:		pathname;
+	prog_num:			integer;
+	booles:			integer;
+	aux:				universal;
+end;;
+
+
+
+
+type aa_xob_with_progdata = class
+	pos_array_rob:	sarray_of(aa_position_rec);
+	pos_array_ext: sarray_of(aa_position_rec);
+	subprog_list:	list_of(aa_subprog_rec);
+	procedure_num:	integer;
+	booles:		integer;
+	aux:			universal;
+end;;
+
+
+function aa_get_xob_with_progdata(xo: xob): aa_xob_with_progdata;
+var	xp: aa_xob_with_progdata;
+	p_arr1, p_arr2: sarray_of(aa_position_rec);
+begin
+	xp := xo ~ aa_xob_with_progdata;
+	
+	if (nul(xp)) then
+		begin
+		p_arr1 := sarray_create(aa_position_rec, 3);
+		p_arr2 := sarray_create(aa_position_rec, 3);
+		aa_procedure_number := aa_procedure_number + 1;
+		xp := mk_aa_xob_with_progdata(	p_arr1,
+									p_arr2,
+									emptylist(aa_subprog_rec),
+									aa_procedure_number,
+									0,
+									-1 as_type universal);
+		splice(xo, xp);
+		end;
+		
+	aa_get_xob_with_progdata := xp;
+end;
+
+
+function aa_init_xob_progdata(xo: xob): aa_xob_with_progdata;
+var	xp: aa_xob_with_progdata;
+	p_arr1, p_arr2: sarray_of(aa_position_rec);
+	ref_shp: shape;
+begin
+	xp := aa_get_xob_with_progdata(xo);
+
+	p_arr1 := sarray_create(aa_position_rec, 3);
+	p_arr2 := sarray_create(aa_position_rec, 3);
+	xp.pos_array_rob := p_arr1;
+	xp.pos_array_ext := p_arr2;
+	
+	{ ALSO CLEAR SUBROUTINE LIST! }
+	xp.subprog_list := emptylist(aa_subprog_rec);
+
+	{ NOW SET CS AS USER_X IF IT EXISTS - OTHERWISE ROBOT REF WILL BE USED ON THE FLY }
+	ref_shp := pp_get_user_frame_from_program(xo);
+	if (null(ref_shp)) then
+		xp.aux := (nil as_type pathname) as_type universal
+	else
+		xp.aux := pathname(ref_shp) as_type universal;
+		
+	aa_init_xob_progdata := xp;
+end;
+
+
+function aa_get_new_subprog_number(prog_xob: xob): integer;
+var	next_num: integer;
+	xp: aa_xob_with_progdata;
+	num_ok: boolean;
+begin
+	xp := aa_get_xob_with_progdata(prog_xob);
+	next_num := 0;
+	
+	num_ok := false;
+	while (not(num_ok)) do
+		begin
+		next_num := next_num + 1;
+		num_ok := true;
+		for i in xp.subprog_list while (num_ok) do
+			num_ok := next_num <> i.prog_num;
+		end;
+	
+	aa_get_new_subprog_number := next_num;
+end;
+
+
+function aa_add_subprog(prog_xob: xob; this_path: pathname): integer;
+var	ret: integer;
+	prog_rec: aa_subprog_rec;
+	xp: aa_xob_with_progdata;
+begin
+	xp := aa_get_xob_with_progdata(prog_xob);
+	ret := aa_get_new_subprog_number(prog_xob);
+	prog_rec := mk_aa_subprog_rec(this_path, ret, 0, -1 as_type universal);
+	xp.subprog_list := cons(prog_rec, xp.subprog_list);
+	
+	aa_add_subprog := ret;
+end;
+
+
+function aa_remove_subprog(prog_xob: xob; this_path: pathname): integer;
+var	ret: integer;
+	check_path: pathname;
+	other_progs: list_of(aa_subprog_rec);
+	xp: aa_xob_with_progdata;
+	found_it: boolean;
+begin
+	ret := -1;
+	
+	xp := aa_get_xob_with_progdata(prog_xob);
+	other_progs := emptylist(aa_subprog_rec);
+	found_it := false;
+	for i in xp.subprog_list do
+		begin
+		check_path := i.prog_path;
+		if (check_path = this_path) then
+			begin
+			{ FOUND RECORD WITH MATCHING PROGRAM NAME }
+			if (not(found_it)) then
+				begin
+				{ THIS IS MOST RECENTLY STARTED INSTANCE - REMOVE IT AND RETURN NUMBER, BUT KEEP LOOKING }
+				ret := i.prog_num;
+				found_it := true;
+				end
+			else
+				begin
+				{ FOUND AN EARLIER INSTANCE - LEAVE THIS PROGRAM ON LIST }
+				other_progs := cons(i, other_progs);
+				writeln('WARNING - FOUND ANOTHER INSTANCE OF PROGRAM. CLOSING MOST RECENT ONE: '
+						* to_string(this_path));
+				end;
+			end
+		else
+			other_progs := cons(i, other_progs);
+		end;
+		
+	other_progs := reversip(other_progs);
+	xp.subprog_list := other_progs;
+		
+	aa_remove_subprog := ret;
+end;
+
+
+function aa_get_progdata_user_frame(prog_xob: xob): shape;
+var	ret: shape;
+	pn: pathname;
+	xp: aa_xob_with_progdata;
+begin
+	ret := null_shape;
+	
+	xp := prog_xob ~ aa_xob_with_progdata;
+	if (not(nul(xp))) then
+		begin
+		pn := xp.aux as_type pathname;
+		if (not(nul(pn))) then
+			ret := wlkupn(pn);
+		end;
+	
+	aa_get_progdata_user_frame := ret;
+end;
+
+
+
+
